@@ -3,13 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HRV Data Viewer</title>
+    <title>Fitbit MetaMax Score</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <div class="container">
-        <h1>HRV Data Viewer</h1>
-        <select id="daysSelector" onchange="fetchAndDisplayData()">
+        <h1>Fitbit MetaMax</h1>
+        <select id="daysSelector" onchange="fetchAndDisplayData(localStorage.getItem('fitbit_access_token'))">
             <option value="7">Last 7 Days</option>
             <option value="14">Last 14 Days</option>
             <option value="30">Last 30 Days</option>

@@ -2,11 +2,11 @@ const CLIENT_ID = '';
 const CLIENT_SECRET = '';
 const REDIRECT_URI = '';
 
-let fullData = []; // Store the full 30 days of HRV data
+let fullData = []; // Store the full days of all metrics data
 
 // Step 1: Redirect the user to Fitbit's authorization page
 function authorize() {
-    const authUrl = `https://www.fitbit.com/oauth2/authorize?response_type=code&client_id=23PN2C&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2F&scope=heartrate&expires_in=604800`;
+    const authUrl = `https://www.fitbit.com/oauth2/authorize?response_type=code&client_id=23PN2C&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2F&scope=heartrate%20respiratory_rate%20temperature%20oxygen_saturation&expires_in=604800`;
     window.location.href = authUrl;
 }
 
@@ -84,76 +84,128 @@ async function refreshAccessToken() {
     }
 }
 
-async function fetchHRVData(accessToken) {
-    const today = new Date().toISOString().split('T')[0];
-    const startDate = new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0];
-
-    const response = await fetch(`https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${today}.json`, {
-        headers: {
-            'Authorization': `Bearer ${accessToken}`
-        }
-    });
-
-    if (response.status === 401) {
-        console.error('Unauthorized! Refreshing access token.');
-        await refreshAccessToken();
-        return;
+function normalizeSeries(series) {
+    const mean = series.reduce((acc, val) => acc + val, 0) / series.length;
+    const stdDev = Math.sqrt(series.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / series.length);
+    
+    if (stdDev === 0) {
+        return series.map(() => 0); // Return an array of zeros if there's no variation
     }
-
-    const data = await response.json();
-    console.log('HRV Data:', data);
-
-    fullData = data.hrv || [];
-    updateChart(7); // Initially display the last 7 days
+    
+    return series.map(val => (val - mean) / stdDev);
 }
 
+function calculateMetaScore(data) {
+    const normalizedData = {
+        HRV: normalizeSeries(data.map(entry => entry.HRV)),
+        Breathing_Rate: normalizeSeries(data.map(entry => entry.Breathing_Rate)),
+        Skin_Temperature: normalizeSeries(data.map(entry => entry.Skin_Temperature)),
+        Oxygen_Saturation: normalizeSeries(data.map(entry => entry.Oxygen_Saturation)),
+        Resting_Heart_Rate: normalizeSeries(data.map(entry => entry.Resting_Heart_Rate))
+    };
 
-// Fetch the access token from local storage or handle authorization
-function handleCallback() {
-    const code = new URLSearchParams(window.location.search).get('code');
-    if (code) {
-        getAccessToken(); // This will handle the OAuth code and exchange it for an access token
-    } else {
-        const accessToken = localStorage.getItem('fitbit_access_token');
-        if (accessToken) {
-            fetchAndDisplayData(accessToken);
+    const weights = {
+        HRV: 0.3,
+        Breathing_Rate: 0.2,
+        Skin_Temperature: 0.2,
+        Oxygen_Saturation: 0.1,
+        Resting_Heart_Rate: 0.2
+    };
+
+    // Calculate Meta Score and apply scaling before rounding
+    const metaScores = data.map((_, index) => {
+        const metaScore = (
+            normalizedData.HRV[index] * weights.HRV +
+            normalizedData.Breathing_Rate[index] * weights.Breathing_Rate +
+            normalizedData.Skin_Temperature[index] * weights.Skin_Temperature +
+            normalizedData.Oxygen_Saturation[index] * weights.Oxygen_Saturation +
+            normalizedData.Resting_Heart_Rate[index] * weights.Resting_Heart_Rate
+        );
+        
+        // Apply scaling or transformation before rounding
+        return Math.round(metaScore * 10); // Multiply by 10 before rounding to introduce more granularity
+    });
+
+    return metaScores;
+}
+
+// Step 3: Fetch the specified number of days of HRV and other data from Fitbit
+async function fetchFitbitData(accessToken, daysToFetch) {
+    const today = new Date().toISOString().split('T')[0];
+    const startDate = new Date(new Date().setDate(new Date().getDate() - daysToFetch)).toISOString().split('T')[0];
+
+    const endpoints = [
+        `https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${today}.json`,         // HRV data
+        `https://api.fitbit.com/1/user/-/br/date/${startDate}/${today}.json`,          // Breathing Rate data
+        `https://api.fitbit.com/1/user/-/temp/skin/date/${startDate}/${today}.json`,   // Skin Temperature data
+        `https://api.fitbit.com/1/user/-/spo2/date/${startDate}/${today}.json`,        // Oxygen Saturation data
+        `https://api.fitbit.com/1/user/-/activities/heart/date/${startDate}/${today}.json` // Resting Heart Rate data
+    ];
+
+    try {
+        const responses = await Promise.all(endpoints.map(endpoint => fetch(endpoint, {
+            headers: { 'Authorization': `Bearer ${accessToken}` }
+        })));
+
+        // Log each response to verify the data structure
+        responses.forEach((response, index) => {
+            console.log(`Response ${index}: `, response);
+        });
+
+        const data = await Promise.all(responses.map(res => res && res.ok ? res.json() : null));
+
+        if (responses.some(res => res && res.status === 401)) {
+            console.error('Unauthorized! Refreshing access token.');
+            await refreshAccessToken();
+            return;
+        }
+
+        // Ensure that data[0].hrv exists and is an array before mapping
+        if (data[0]?.hrv && Array.isArray(data[0].hrv)) {
+            fullData = data[0].hrv.map((entry, index) => ({
+                dateTime: entry.dateTime,
+                HRV: entry.value.dailyRmssd,
+                Breathing_Rate: data[1]?.br?.[index]?.value?.breathingRate || null,
+                Skin_Temperature: data[2]?.tempSkin?.[index]?.value?.nightlyRelative || null,
+                Oxygen_Saturation: data[3]?.spo2?.[index]?.value?.oxygenSaturation || null,
+                Resting_Heart_Rate: data[4]?.['activities-heart']?.[index]?.value?.restingHeartRate || null
+            }));
+
+            // Log fullData to verify correct mapping
+            console.log("Full Data:", fullData);
         } else {
-            authorize(); // Redirects to Fitbit if no access token or code is found
+            console.error('HRV data is missing or in an unexpected format');
+            return;
         }
-    }
-}
 
-handleCallback();
+        if (fullData.length > 0) {
+            const metaScores = calculateMetaScore(fullData);
+            // Log metaScores to check for NaN values
+            console.log("Meta Scores before rounding:", metaScores);
+            fullData.forEach((entry, index) => entry.metamax = metaScores[index]);
 
-// Step 3: Fetch 30 days of HRV data from Fitbit
-async function fetchHRVData(accessToken) {
-    const today = new Date().toISOString().split('T')[0];
-    const startDate = new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0];
-    
-    const response = await fetch(`https://api.fitbit.com/1/user/-/hrv/date/${startDate}/${today}.json`, {
-        headers: {
-            'Authorization': `Bearer ${accessToken}`
+            // Log fullData after adding metamax to check for NaN
+            console.log("Full Data with MetaMax:", fullData);
         }
-    });
-    
-    const data = await response.json();
-    console.log('HRV Data:', data);
 
-    if (response.status === 401) {
-        console.error('Unauthorized! Check if the access token is valid.');
-        return [];
+        updateChart(daysToFetch); // Initially display the last `daysToFetch` days
+
+    } catch (error) {
+        console.error('Error fetching data:', error);
     }
-
-    fullData = data.hrv || [];
-    updateChart(7); // Initially display the last 7 days
 }
 
 // Step 4: Update the chart based on the selected number of days
 function updateChart(days) {
-    const filteredData = fullData.slice(-days); // Get the last `days` entries
+    const filteredData = fullData.slice(0, days); // Get the first `days` entries
+
 
     const labels = filteredData.map(entry => entry.dateTime);
-    const values = filteredData.map(entry => entry.value.dailyRmssd); // Use the correct key based on API response
+    const values = filteredData.map(entry => entry.metamax); // Display the metamax value
+
+    // Debugging output to check if labels and values are correct
+    console.log("Labels:", labels);
+    console.log("Values:", values);
 
     const ctx = document.getElementById('hrvChart').getContext('2d');
 
@@ -167,7 +219,7 @@ function updateChart(days) {
         data: {
             labels: labels,
             datasets: [{
-                label: 'Milliseconds (ms)',
+                label: 'MetaMax Score',
                 data: values,
                 borderColor: '#3e95cd',
                 fill: false,
@@ -187,7 +239,7 @@ function updateChart(days) {
                         weight: 'bold'
                     },
                     formatter: function(value) {
-                        return value.toFixed(1); // Format the label text
+                        return Math.round(value); // Correctly display the rounded metamax value
                     }
                 }
             },
@@ -201,12 +253,16 @@ function updateChart(days) {
                 y: {
                     beginAtZero: true,
                     ticks: {
-                        color: 'black'
+                        color: 'black',
+                        stepSize: 1, // Increment Y-axis by 1
+                        callback: function(value) {
+                            return Math.round(value); // Display only integer values
+                        }
                     }
                 }
             }
         },
-        plugins: [ChartDataLabels] // Make sure the plugin is loaded and used here
+        plugins: [ChartDataLabels] // Ensure the plugin is loaded and used here
     });
 }
 
@@ -214,11 +270,25 @@ function updateChart(days) {
 let hrvChart; // Reference to the chart instance
 
 function fetchAndDisplayData(accessToken) {
-    if (fullData.length === 0) {
-        fetchHRVData(accessToken); // Fetch 30 days of data if not already fetched
+    const days = parseInt(document.getElementById('daysSelector').value); // Get the selected number of days
+    fetchFitbitData(accessToken, days); // Fetch the data for the selected number of days
+}
+
+// Fetch the access token from local storage or handle authorization
+function handleCallback() {
+    const code = new URLSearchParams(window.location.search).get('code');
+    if (code) {
+        getAccessToken(); // This will handle the OAuth code and exchange it for an access token
     } else {
-        const days = document.getElementById('daysSelector').value;
-        updateChart(days);
+        const accessToken = localStorage.getItem('fitbit_access_token');
+        if (accessToken) {
+            fetchAndDisplayData(accessToken);
+        } else {
+            authorize(); // Redirects to Fitbit if no access token or code is found
+        }
     }
 }
 
+handleCallback();
+
+       
