@@ -197,8 +197,8 @@ async function fetchFitbitData(accessToken, daysToFetch) {
 
 // Step 4: Update the chart based on the selected number of days
 function updateChart(days) {
-    const filteredData = fullData.slice(0, days); // Get the first `days` entries
-
+    // Slice the last `days` entries instead of the first `days` entries
+    const filteredData = fullData.slice(-days); // Get the last `days` entries
 
     const labels = filteredData.map(entry => entry.dateTime);
     const values = filteredData.map(entry => entry.metamax); // Display the metamax value
@@ -265,6 +265,7 @@ function updateChart(days) {
         plugins: [ChartDataLabels] // Ensure the plugin is loaded and used here
     });
 }
+
 
 // Step 5: Fetch data and display it initially, and allow the user to switch between time ranges
 let hrvChart; // Reference to the chart instance
