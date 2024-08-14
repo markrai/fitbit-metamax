@@ -1,6 +1,6 @@
-const CLIENT_ID = '';
-const CLIENT_SECRET = '';
-const REDIRECT_URI = '';
+const CLIENT_ID = '23PN2C';
+const CLIENT_SECRET = '102b8ad7a686db8c8f3a774f86a30765';
+const REDIRECT_URI = 'http://127.0.0.1:8080/';
 
 let fullData = []; // Store the full days of all metrics data
 
@@ -84,7 +84,7 @@ async function refreshAccessToken() {
     }
 }
 
-function normalizeSeries(series) {
+function normalizeSeries(series, invert = false) {
     const mean = series.reduce((acc, val) => acc + val, 0) / series.length;
     const stdDev = Math.sqrt(series.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / series.length);
     
@@ -92,17 +92,21 @@ function normalizeSeries(series) {
         return series.map(() => 0); // Return an array of zeros if there's no variation
     }
     
-    return series.map(val => (val - mean) / stdDev);
+    const normalized = series.map(val => (val - mean) / stdDev);
+    
+    return invert ? normalized.map(val => -val) : normalized;
 }
+
 
 function calculateMetaScore(data) {
     const normalizedData = {
         HRV: normalizeSeries(data.map(entry => entry.HRV)),
-        Breathing_Rate: normalizeSeries(data.map(entry => entry.Breathing_Rate)),
+        Breathing_Rate: normalizeSeries(data.map(entry => entry.Breathing_Rate), true), 
         Skin_Temperature: normalizeSeries(data.map(entry => entry.Skin_Temperature)),
         Oxygen_Saturation: normalizeSeries(data.map(entry => entry.Oxygen_Saturation)),
-        Resting_Heart_Rate: normalizeSeries(data.map(entry => entry.Resting_Heart_Rate))
+        Resting_Heart_Rate: normalizeSeries(data.map(entry => entry.Resting_Heart_Rate), true) 
     };
+    
 
     const weights = {
         HRV: 0.3,
